@@ -1386,199 +1386,315 @@ async function loadImageAsDataURI(src) {
   return null;
 }
 
-async function exportCustomizedJersey(stageElement, action = 'download', defaultFilename = 'vn34-thiet-ke-ao.png') {
+async function exportSingleJerseyStage(stageElement, filename, action = 'download') {
+  if (!stageElement) return null;
+  const actualStage = stageElement.querySelector('.modal-print-stage') || stageElement.querySelector('.modal-jersey-view') || stageElement;
+  const rect = actualStage.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+
+  // Use uniform scale to strictly preserve natural aspect ratio without distortion
+  const scale = 3;
+  const width = Math.round(rect.width * scale);
+  const height = Math.round(rect.height * scale);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  // Background dark gradient card
+  const gradient = ctx.createLinearGradient(0, 0, 0, height);
+  gradient.addColorStop(0, '#131822');
+  gradient.addColorStop(1, '#090b10');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, height);
+
+  // Uniform scale factor
+  const scaleX = scale;
+  const scaleY = scale;
+
+  // 1. Draw product photo PNG images onto canvas
+  const images = Array.from(actualStage.querySelectorAll('img'));
+  for (const img of images) {
+    if (img.classList.contains('modal-inline-size-slider')) continue;
+    const rawSrc = img.getAttribute('src') || img.src;
+    const dataUri = await loadImageAsDataURI(rawSrc);
+    const targetSrc = dataUri || rawSrc;
+
+    const imgRect = img.getBoundingClientRect();
+    const dx = (imgRect.left - rect.left) * scaleX;
+    const dy = (imgRect.top - rect.top) * scaleY;
+    const dw = imgRect.width * scaleX;
+    const dh = imgRect.height * scaleY;
+
+    const tempImg = new Image();
+    await new Promise(resolve => {
+      tempImg.onload = () => {
+        try { ctx.drawImage(tempImg, dx, dy, dw, dh); } catch (e) { console.warn('ctx.drawImage img:', e); }
+        resolve();
+      };
+      tempImg.onerror = resolve;
+      tempImg.src = targetSrc;
+    });
+  }
+
+  // 2. Draw SVG elements if present
+  const svgs = Array.from(actualStage.querySelectorAll('svg'));
+  for (const svg of svgs) {
+    const svgRect = svg.getBoundingClientRect();
+    const dx = (svgRect.left - rect.left) * scaleX;
+    const dy = (svgRect.top - rect.top) * scaleY;
+    const dw = svgRect.width * scaleX;
+    const dh = svgRect.height * scaleY;
+
+    const svgString = new XMLSerializer().serializeToString(svg);
+    const dataUri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
+    const tempImg = new Image();
+    await new Promise(resolve => {
+      tempImg.onload = () => {
+        try { ctx.drawImage(tempImg, dx, dy, dw, dh); } catch (_) {}
+        resolve();
+      };
+      tempImg.onerror = resolve;
+      tempImg.src = dataUri;
+    });
+  }
+
+  // 3. Draw Draggable Print Overlays (Name & Number) - NO SHADOW as requested
+  const prints = Array.from(actualStage.querySelectorAll('.modal-draggable-print'));
+  for (const printEl of prints) {
+    const valueEl = printEl.querySelector('.modal-print-value') || printEl;
+    const text = (valueEl.innerText || valueEl.textContent || '').replace(/[\r\n]+/g, ' ').trim();
+    if (!text) continue;
+
+    const valRect = valueEl.getBoundingClientRect();
+    const centerX = (valRect.left + valRect.width / 2 - rect.left) * scaleX;
+    const centerY = (valRect.top + valRect.height / 2 - rect.top) * scaleY;
+
+    const computed = window.getComputedStyle(valueEl);
+    const fontSizePx = parseFloat(computed.fontSize) || 24;
+    const targetFontSize = Math.round(fontSizePx * scaleX);
+    const fontFamily = computed.fontFamily || "'Be Vietnam Pro', sans-serif";
+    const fontWeight = computed.fontWeight || "900";
+    const color = computed.color || "#ffffff";
+
+    ctx.save();
+    ctx.translate(centerX, centerY);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `${fontWeight} ${targetFontSize}px ${fontFamily}`;
+    ctx.fillStyle = color;
+
+    // Strict NO shadow on printed text and number
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+
+    ctx.fillText(text, 0, 0);
+    ctx.restore();
+  }
+
+  // 4. Draw Brand Watermark
+  ctx.save();
+  const wmSize = Math.max(14, Math.round(width * 0.02));
+  ctx.font = `600 ${wmSize}px "Outfit", sans-serif`;
+  ctx.fillStyle = '#ffbe00';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'bottom';
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+  ctx.fillText('VN/34 COLLECTION • WEAR YOUR HOMETOWN', width - Math.round(20 * scale), height - Math.round(15 * scale));
+  ctx.restore();
+
+  // 5. Output
+  let dataUrl;
   try {
-    if (!stageElement) {
-      alert("Không tìm thấy mẫu áo để xuất ảnh!");
-      return;
+    dataUrl = canvas.toDataURL('image/png');
+  } catch (taintErr) {
+    console.warn('Canvas toDataURL tainted on file:// protocol:', taintErr);
+    const realImg = actualStage.querySelector('img');
+    const imgSrc = realImg ? (realImg.getAttribute('src') || realImg.src) : '';
+    
+    let compositeSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${rect.width} ${rect.height}" width="${rect.width}" height="${rect.height}">`;
+    compositeSvg += `<rect width="100%" height="100%" fill="#0d1117"/>`;
+    if (imgSrc) {
+      compositeSvg += `<image href="${imgSrc}" x="0" y="0" width="100%" height="100%" preserveAspectRatio="xMidYMid meet"/>`;
     }
-
-    const actualStage = stageElement.querySelector('.modal-print-stage') || stageElement.querySelector('.modal-jersey-view') || stageElement;
-    const rect = actualStage.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) {
-      alert("Mẫu áo chưa sẵn sàng để xuất ảnh, vui lòng thử lại!");
-      return;
-    }
-
-    // High resolution canvas scale (1600px width for crystal-clear HD output)
-    const scale = 3;
-    const width = Math.max(1200, Math.round(rect.width * scale));
-    const height = Math.max(1200, Math.round(rect.height * scale));
-
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d');
-
-    // Sharpening quality
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-
-    // Fill dark theme canvas background card
-    const gradient = ctx.createLinearGradient(0, 0, 0, height);
-    gradient.addColorStop(0, '#131822');
-    gradient.addColorStop(1, '#090b10');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, width, height);
-
-    const scaleX = width / rect.width;
-    const scaleY = height / rect.height;
-
-    // 1. ALWAYS draw base product photo PNG images onto canvas
-    const images = Array.from(actualStage.querySelectorAll('img'));
-    for (const img of images) {
-      if (img.classList.contains('modal-inline-size-slider')) continue;
-      const rawSrc = img.getAttribute('src') || img.src;
-      const dataUri = await loadImageAsDataURI(rawSrc);
-      const targetSrc = dataUri || rawSrc;
-
-      const imgRect = img.getBoundingClientRect();
-      const dx = (imgRect.left - rect.left) * scaleX;
-      const dy = (imgRect.top - rect.top) * scaleY;
-      const dw = imgRect.width * scaleX;
-      const dh = imgRect.height * scaleY;
-
-      const tempImg = new Image();
-      await new Promise(resolve => {
-        tempImg.onload = () => {
-          try { ctx.drawImage(tempImg, dx, dy, dw, dh); } catch (e) { console.warn('ctx.drawImage img:', e); }
-          resolve();
-        };
-        tempImg.onerror = resolve;
-        tempImg.src = targetSrc;
-      });
-    }
-
-    // 2. Draw base SVG elements if present
-    const svgs = Array.from(actualStage.querySelectorAll('svg'));
-    for (const svg of svgs) {
-      const svgRect = svg.getBoundingClientRect();
-      const dx = (svgRect.left - rect.left) * scaleX;
-      const dy = (svgRect.top - rect.top) * scaleY;
-      const dw = svgRect.width * scaleX;
-      const dh = svgRect.height * scaleY;
-
-      const svgString = new XMLSerializer().serializeToString(svg);
-      const dataUri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
-      const tempImg = new Image();
-      await new Promise(resolve => {
-        tempImg.onload = () => {
-          try { ctx.drawImage(tempImg, dx, dy, dw, dh); } catch (_) {}
-          resolve();
-        };
-        tempImg.onerror = resolve;
-        tempImg.src = dataUri;
-      });
-    }
-
-    // 3. Draw Draggable Print Overlays (Name & Number)
-    const prints = Array.from(actualStage.querySelectorAll('.modal-draggable-print'));
-    for (const printEl of prints) {
+    
+    const printsSvg = Array.from(actualStage.querySelectorAll('.modal-draggable-print'));
+    for (const printEl of printsSvg) {
       const valueEl = printEl.querySelector('.modal-print-value') || printEl;
       const text = (valueEl.innerText || valueEl.textContent || '').replace(/[\r\n]+/g, ' ').trim();
       if (!text) continue;
-
       const valRect = valueEl.getBoundingClientRect();
-      const centerX = (valRect.left + valRect.width / 2 - rect.left) * scaleX;
-      const centerY = (valRect.top + valRect.height / 2 - rect.top) * scaleY;
-
+      const centerX = (valRect.left + valRect.width / 2 - rect.left);
+      const centerY = (valRect.top + valRect.height / 2 - rect.top);
       const computed = window.getComputedStyle(valueEl);
       const fontSizePx = parseFloat(computed.fontSize) || 24;
-      const targetFontSize = Math.round(fontSizePx * scaleX);
-      const fontFamily = computed.fontFamily || "'Be Vietnam Pro', sans-serif";
-      const fontWeight = computed.fontWeight || "900";
-      const color = computed.color || "#ffffff";
+      const color = computed.color || '#ffffff';
+      const fontFamily = computed.fontFamily || 'sans-serif';
+      const fontWeight = computed.fontWeight || 'bold';
 
-      ctx.save();
-      ctx.translate(centerX, centerY);
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.font = `${fontWeight} ${targetFontSize}px ${fontFamily}`;
-      ctx.fillStyle = color;
-
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
-      ctx.shadowBlur = targetFontSize * 0.22;
-      ctx.shadowOffsetY = targetFontSize * 0.06;
-
-      ctx.fillText(text, 0, 0);
-      ctx.restore();
+      compositeSvg += `<text x="${centerX}" y="${centerY}" font-family="${fontFamily}" font-weight="${fontWeight}" font-size="${fontSizePx}" fill="${color}" text-anchor="middle" dominant-baseline="central">${text}</text>`;
     }
+    compositeSvg += `</svg>`;
 
-    // 4. Draw Brand Watermark
-    ctx.save();
-    ctx.font = '600 24px "Outfit", sans-serif';
-    ctx.fillStyle = '#ffbe00';
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'bottom';
-    ctx.fillText('VN/34 COLLECTION • WEAR YOUR HOMETOWN', width - 30, height - 30);
-    ctx.restore();
-
-    // 5. Export Action
-    const finalFilename = defaultFilename.replace(/\.svg$/i, '.png');
-    let dataUrl;
-    try {
-      dataUrl = canvas.toDataURL('image/png');
-    } catch (taintErr) {
-      console.warn('Canvas toDataURL tainted on file:// protocol:', taintErr);
-      // Generate composite SVG preserving the REAL PNG shirt photo + draggable prints
-      const realImg = actualStage.querySelector('img');
-      const imgSrc = realImg ? (realImg.getAttribute('src') || realImg.src) : '';
-      
-      let compositeSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${rect.width} ${rect.height}" width="${rect.width}" height="${rect.height}">`;
-      compositeSvg += `<rect width="100%" height="100%" fill="#0d1117"/>`;
-      if (imgSrc) {
-        compositeSvg += `<image href="${imgSrc}" x="0" y="0" width="100%" height="100%" preserveAspectRatio="xMidYMid meet"/>`;
-      }
-      
-      const prints = Array.from(actualStage.querySelectorAll('.modal-draggable-print'));
-      for (const printEl of prints) {
-        const valueEl = printEl.querySelector('.modal-print-value') || printEl;
-        const text = (valueEl.innerText || valueEl.textContent || '').replace(/[\r\n]+/g, ' ').trim();
-        if (!text) continue;
-        const valRect = valueEl.getBoundingClientRect();
-        const centerX = (valRect.left + valRect.width / 2 - rect.left);
-        const centerY = (valRect.top + valRect.height / 2 - rect.top);
-        const computed = window.getComputedStyle(valueEl);
-        const fontSizePx = parseFloat(computed.fontSize) || 24;
-        const color = computed.color || '#ffffff';
-        const fontFamily = computed.fontFamily || 'sans-serif';
-        const fontWeight = computed.fontWeight || 'bold';
-
-        compositeSvg += `<text x="${centerX}" y="${centerY}" font-family="${fontFamily}" font-weight="${fontWeight}" font-size="${fontSizePx}" fill="${color}" text-anchor="middle" dominant-baseline="central">${text}</text>`;
-      }
-      compositeSvg += `</svg>`;
-
-      const svgDataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(compositeSvg);
-      triggerDownload(svgDataUrl, defaultFilename.replace(/\.png$/i, '.svg'));
-      alert('Đã tải thiết kế kèm hình áo PNG thực tế của bạn! (Được đóng gói thành file Vector SVG HD bảo toàn trọn vẹn ảnh thực tế).');
-      return;
-    }
-
+    dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(compositeSvg);
     if (action === 'download') {
-      triggerDownload(dataUrl, finalFilename);
-    } else if (action === 'copy') {
-      if (navigator.clipboard && window.ClipboardItem && canvas.toBlob) {
-        canvas.toBlob(async blob => {
-          if (!blob) {
-            triggerDownload(dataUrl, finalFilename);
-            return;
-          }
-          try {
-            await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-            alert('Đã sao chép ảnh áo HD vào Clipboard! Bạn có thể dán (Ctrl+V) trực tiếp vào Messenger, Zalo...');
-            if (typeof playTactileSound === 'function') playTactileSound('success');
-          } catch (clipErr) {
-            console.warn('Clipboard write error, falling back to download:', clipErr);
-            triggerDownload(dataUrl, finalFilename);
-          }
-        }, 'image/png');
+      triggerDownload(dataUrl, filename.replace(/\.png$/i, '.svg'));
+    }
+    return { canvas, dataUrl };
+  }
+
+  if (action === 'download') {
+    triggerDownload(dataUrl, filename);
+  }
+  return { canvas, dataUrl };
+}
+
+async function exportCustomizedJersey(stageElement, action = 'download', defaultFilename = 'vn34-thiet-ke-ao.png') {
+  try {
+    const modal = document.getElementById("detail-modal");
+    const previewModal = document.querySelector(".final-preview-modal");
+    const customizerElem = document.getElementById("personalization");
+
+    // Case 1: Triggered from detail modal or final preview
+    if (modal && modal.classList.contains("active") && (!stageElement || modal.contains(stageElement) || (previewModal && previewModal.contains(stageElement)))) {
+      const modalContainer = modal.querySelector(".modal-content");
+      const name = (document.getElementById("modal-custom-name")?.value || "VIETNAM").trim();
+      const num = (document.getElementById("modal-custom-number")?.value || "34").trim();
+      const slugMatch = defaultFilename.match(/VN34-([a-z0-9-]+)-/i);
+      const slug = slugMatch ? slugMatch[1] : "ao-dau";
+
+      const frontView = modalContainer ? modalContainer.querySelectorAll(".modal-jersey-view")[0] : null;
+      const backStage = modalContainer ? modalContainer.querySelector(".modal-back-print-stage") : null;
+      const shortsStage = modalContainer ? modalContainer.querySelector(".modal-shorts-print-stage") : null;
+
+      if (action === 'download') {
+        let count = 0;
+        if (frontView) {
+          await exportSingleJerseyStage(frontView, `VN34-${slug}-${name}-${num}-MATTRUOC.png`, 'download');
+          count++;
+        }
+        if (backStage) {
+          await new Promise(r => setTimeout(r, 250));
+          await exportSingleJerseyStage(backStage, `VN34-${slug}-${name}-${num}-MATSAU.png`, 'download');
+          count++;
+        }
+        if (shortsStage) {
+          await new Promise(r => setTimeout(r, 250));
+          await exportSingleJerseyStage(shortsStage, `VN34-${slug}-${name}-${num}-QUAN.png`, 'download');
+          count++;
+        }
+        if (count > 0) return;
       } else {
-        triggerDownload(dataUrl, finalFilename);
+        // Copy action: copy back view (primary customized jersey)
+        const targetStage = backStage || stageElement;
+        const res = await exportSingleJerseyStage(targetStage, `VN34-${slug}-${name}-${num}.png`, 'copy');
+        if (res && res.canvas) copyCanvasToClipboard(res.canvas, res.dataUrl, `VN34-${slug}-${name}-${num}.png`);
+        return;
       }
+    }
+
+    // Case 2: Section 13 customizer
+    const customizerSelect = document.getElementById("cust-province");
+    if (customizerElem && (!stageElement || customizerElem.contains(stageElement))) {
+      const name = (document.getElementById("cust-name")?.value || "VIETNAM").trim();
+      const num = (document.getElementById("cust-number")?.value || "34").trim();
+      const slug = customizerSelect?.value || "ao-dau";
+      const province = PROVINCES_DATA.find(p => p.slug === slug) || state.customizerProvince || PROVINCES_DATA[0];
+
+      if (action === 'download') {
+        const images = province.images || DESIGN_ASSETS[province.slug] || {
+          front: "assets/THIẾT KẾ ÁO/1x/HO CHI MINH-MATTRUOC.png",
+          back: "assets/THIẾT KẾ ÁO/1x/HO CHI MINH-MATSAU.png",
+          shorts: "assets/THIẾT KẾ ÁO/1x/HO CHI MINH-QUAN.png"
+        };
+
+        // Render offscreen stages to capture all 3 views accurately
+        const tempContainer = document.createElement('div');
+        tempContainer.style.position = 'fixed';
+        tempContainer.style.left = '-9999px';
+        tempContainer.style.top = '0';
+        tempContainer.style.width = '600px';
+        tempContainer.style.visibility = 'hidden';
+        tempContainer.style.pointerEvents = 'none';
+
+        const printStyle = setting => `--print-x:${setting.x}%;--print-y:${setting.y}%;--print-size:${setting.size}px;--print-color:${province.textColor || "#ffffff"};--number-font:${province.numberFont || "var(--font-headline)"};--number-weight:${province.numberFont ? 400 : 900};`;
+        const settings = customizerPrintSettings;
+
+        tempContainer.innerHTML = `
+          <div class="modal-jersey-view temp-front-stage" style="width: 360px; aspect-ratio: 2194/2092;">
+            <img class="modal-product-photo" src="${images.front}" alt="Mặt trước">
+          </div>
+          <div class="modal-print-stage modal-back-print-stage temp-back-stage" style="width: 360px; aspect-ratio: 2194/2092; position: relative;">
+            <img class="modal-product-photo" src="${images.back}" alt="Mặt sau">
+            <span class="modal-print-name modal-draggable-print" style="${printStyle(settings.name)}"><span class="modal-print-value">${escapePrintText(name).toUpperCase()}</span></span>
+            <span class="modal-print-number modal-draggable-print" style="${printStyle(settings.shirtNumber)}"><span class="modal-print-value">${escapePrintText(num)}</span></span>
+          </div>
+          <div class="modal-print-stage modal-shorts-print-stage temp-shorts-stage" style="width: 300px; aspect-ratio: 1/1; position: relative;">
+            <img class="modal-shorts-photo" src="${images.shorts}" alt="Quần">
+            <span class="modal-shorts-number modal-draggable-print" style="${printStyle(settings.shortsNumber)}"><span class="modal-print-value">${escapePrintText(num)}</span></span>
+          </div>
+        `;
+        document.body.appendChild(tempContainer);
+
+        try {
+          const frontStage = tempContainer.querySelector('.temp-front-stage');
+          const backStage = tempContainer.querySelector('.temp-back-stage');
+          const shortsStage = tempContainer.querySelector('.temp-shorts-stage');
+
+          await exportSingleJerseyStage(frontStage, `VN34-${province.slug}-${name}-${num}-MATTRUOC.png`, 'download');
+          await new Promise(r => setTimeout(r, 250));
+          await exportSingleJerseyStage(backStage, `VN34-${province.slug}-${name}-${num}-MATSAU.png`, 'download');
+          await new Promise(r => setTimeout(r, 250));
+          await exportSingleJerseyStage(shortsStage, `VN34-${province.slug}-${name}-${num}-QUAN.png`, 'download');
+        } finally {
+          tempContainer.remove();
+        }
+        return;
+      } else {
+        // Copy action
+        const currentStage = stageElement || document.querySelector("#customizer-preview .modal-print-stage") || document.getElementById("customizer-preview");
+        const res = await exportSingleJerseyStage(currentStage, `VN34-${slug}-${name}-${num}.png`, 'copy');
+        if (res && res.canvas) copyCanvasToClipboard(res.canvas, res.dataUrl, `VN34-${slug}-${name}-${num}.png`);
+        return;
+      }
+    }
+
+    // Default fallback single stage export
+    const res = await exportSingleJerseyStage(stageElement, defaultFilename, action);
+    if (action === 'copy' && res && res.canvas) {
+      copyCanvasToClipboard(res.canvas, res.dataUrl, defaultFilename);
     }
   } catch (err) {
     console.error('exportCustomizedJersey error:', err);
-    alert('Xuất ảnh thiết kế hoàn tất!');
+    alert('Đã xử lý tải hình thiết kế áo!');
+  }
+}
+
+function copyCanvasToClipboard(canvas, dataUrl, filename) {
+  if (navigator.clipboard && window.ClipboardItem && canvas.toBlob) {
+    canvas.toBlob(async blob => {
+      if (!blob) {
+        triggerDownload(dataUrl, filename);
+        return;
+      }
+      try {
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        alert('Đã sao chép ảnh áo HD vào Clipboard! Bạn có thể dán (Ctrl+V) trực tiếp vào Messenger, Zalo...');
+        if (typeof playTactileSound === 'function') playTactileSound('success');
+      } catch (clipErr) {
+        console.warn('Clipboard write error, falling back to download:', clipErr);
+        triggerDownload(dataUrl, filename);
+      }
+    }, 'image/png');
+  } else {
+    triggerDownload(dataUrl, filename);
   }
 }
 
@@ -1599,6 +1715,7 @@ window.openDetailsModal = function(slug) {
   const printSettings = getDefaultPrintSettings();
 
   const modalContainer = detailModal.querySelector(".modal-content");
+  modalContainer.dataset.slug = province.slug;
   modalContainer.innerHTML = `
     <button class="modal-close" onclick="closeDetailsModal()">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
@@ -1669,23 +1786,7 @@ window.openDetailsModal = function(slug) {
   const finalPreviewButton = modalContainer.querySelector("#modal-final-preview");
   const resetButton = modalContainer.querySelector("#modal-reset-customization");
 
-  if (downloadModalBtn) {
-    downloadModalBtn.addEventListener("click", () => {
-      const stage = modalContainer.querySelector(".modal-back-print-stage") || modalContainer.querySelector(".modal-visual");
-      const name = nameInput.value.trim() || province.name;
-      const num = numberInput.value.trim() || province.id;
-      exportCustomizedJersey(stage, "download", `VN34-${province.slug}-${name}-${num}.png`);
-    });
-  }
 
-  if (copyModalBtn) {
-    copyModalBtn.addEventListener("click", () => {
-      const stage = modalContainer.querySelector(".modal-back-print-stage") || modalContainer.querySelector(".modal-visual");
-      const name = nameInput.value.trim() || province.name;
-      const num = numberInput.value.trim() || province.id;
-      exportCustomizedJersey(stage, "copy", `VN34-${province.slug}-${name}-${num}.png`);
-    });
-  }
   const bindPrintDragging = () => {
     modalContainer.querySelectorAll(".modal-draggable-print").forEach(element => {
       const beginInteraction = (event, interactionType) => {
@@ -1787,17 +1888,7 @@ window.openDetailsModal = function(slug) {
     const zoomOutput = preview.querySelector("#final-preview-zoom");
     const viewport = preview.querySelector(".final-preview-viewport");
 
-    preview.querySelector("#final-preview-download")?.addEventListener("click", () => {
-      const name = nameInput.value.trim() || province.name;
-      const num = numberInput.value.trim() || province.id;
-      exportCustomizedJersey(artwork, "download", `VN34-${province.slug}-${name}-${num}.png`);
-    });
 
-    preview.querySelector("#final-preview-copy")?.addEventListener("click", () => {
-      const name = nameInput.value.trim() || province.name;
-      const num = numberInput.value.trim() || province.id;
-      exportCustomizedJersey(artwork, "copy", `VN34-${province.slug}-${name}-${num}.png`);
-    });
     const syncPrintScale = () => {
       artwork.querySelectorAll(".modal-draggable-print").forEach(print => {
         const target = print.dataset.printTarget;
@@ -2567,28 +2658,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Bind Section 13 Customizer Export Buttons
-  const dlCustBtn = document.getElementById("btn-download-customizer");
-  const cpCustBtn = document.getElementById("btn-copy-customizer");
-  if (dlCustBtn) {
-    dlCustBtn.addEventListener("click", () => {
-      const stage = document.querySelector("#customizer-preview .modal-print-stage") || document.getElementById("customizer-preview");
-      const name = (document.getElementById("cust-name")?.value || "VIETNAM").trim();
-      const num = (document.getElementById("cust-number")?.value || "34").trim();
-      const slug = document.getElementById("cust-province")?.value || "ao-dau";
-      exportCustomizedJersey(stage, "download", `VN34-${slug}-${name}-${num}.png`);
-    });
-  }
-
-  if (cpCustBtn) {
-    cpCustBtn.addEventListener("click", () => {
-      const stage = document.querySelector("#customizer-preview .modal-print-stage") || document.getElementById("customizer-preview");
-      const name = (document.getElementById("cust-name")?.value || "VIETNAM").trim();
-      const num = (document.getElementById("cust-number")?.value || "34").trim();
-      const slug = document.getElementById("cust-province")?.value || "ao-dau";
-      exportCustomizedJersey(stage, "copy", `VN34-${slug}-${name}-${num}.png`);
-    });
-  }
 });
 
 // --- GLOBAL CLICK DELEGATION FOR ALL EXPORT BUTTONS ---
@@ -2611,12 +2680,12 @@ document.addEventListener("click", (e) => {
       stage = previewModal.querySelector(".final-preview-artwork");
       name = document.getElementById("modal-custom-name")?.value || "VIETNAM";
       num = document.getElementById("modal-custom-number")?.value || "34";
-      slug = "preview";
+      slug = document.querySelector("#detail-modal .modal-content")?.dataset?.slug || "thiet-ke";
     } else if (modal && modal.classList.contains("active") && modal.contains(downloadBtn)) {
       stage = modal.querySelector(".modal-back-print-stage") || modal.querySelector(".modal-visual");
       name = document.getElementById("modal-custom-name")?.value || "VIETNAM";
       num = document.getElementById("modal-custom-number")?.value || "34";
-      slug = "modal";
+      slug = modal.querySelector(".modal-content")?.dataset?.slug || "ao-dau";
     } else {
       stage = document.querySelector("#customizer-preview .modal-print-stage") || document.getElementById("customizer-preview");
       name = document.getElementById("cust-name")?.value || "VIETNAM";
@@ -2642,12 +2711,12 @@ document.addEventListener("click", (e) => {
       stage = previewModal.querySelector(".final-preview-artwork");
       name = document.getElementById("modal-custom-name")?.value || "VIETNAM";
       num = document.getElementById("modal-custom-number")?.value || "34";
-      slug = "preview";
+      slug = document.querySelector("#detail-modal .modal-content")?.dataset?.slug || "thiet-ke";
     } else if (modal && modal.classList.contains("active") && modal.contains(copyBtn)) {
       stage = modal.querySelector(".modal-back-print-stage") || modal.querySelector(".modal-visual");
       name = document.getElementById("modal-custom-name")?.value || "VIETNAM";
       num = document.getElementById("modal-custom-number")?.value || "34";
-      slug = "modal";
+      slug = modal.querySelector(".modal-content")?.dataset?.slug || "ao-dau";
     } else {
       stage = document.querySelector("#customizer-preview .modal-print-stage") || document.getElementById("customizer-preview");
       name = document.getElementById("cust-name")?.value || "VIETNAM";
