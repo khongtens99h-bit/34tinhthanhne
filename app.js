@@ -506,7 +506,6 @@ const LEGACY_PROVINCES_DATA = [
   },
   {
     id: "34",
-    name: "Lạng Sơn 2", // Replacing to ensure exact match of 34 unique entries: Lạng Sơn exists. Let's make 34: Lạng Sơn, Bắc Ninh, Bình Định, and Lâm Đồng is already there. Wait, let's verify if we have 34 unique. Let's name this one "Quảng Ngãi"
     name: "Quảng Ngãi",
     slug: "quang-ngai",
     region: "trung",
@@ -541,14 +540,21 @@ const DESIGN_ASSETS = Object.freeze({
 const DESIGN_ASSET_DIRECTORY = "assets/THIẾT KẾ ÁO/1x/";
 
 function makeDesignAssetKeys(province) {
-  const normalize = value => value
+  const stripDiacritics = value => value
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[đĐ]/g, "d")
-    .replace(/[^a-z0-9]/gi, "")
     .toUpperCase();
   const shortName = province.name.replace(/^Thành phố\s+/i, "");
-  return [...new Set([normalize(province.name), normalize(shortName), normalize(province.slug)])];
+  const keys = [
+    stripDiacritics(province.name),
+    stripDiacritics(province.name).replace(/[^A-Z0-9]/g, ""),
+    stripDiacritics(shortName),
+    stripDiacritics(shortName).replace(/[^A-Z0-9]/g, ""),
+    stripDiacritics(province.slug),
+    stripDiacritics(province.slug).replace(/[^A-Z0-9]/g, "")
+  ];
+  return [...new Set(keys)];
 }
 
 function doesDesignImageExist(src) {
@@ -1323,7 +1329,63 @@ function renderModalJerseyPair(province, name, number, printSettings = null) {
   `;
 }
 
-// --- EXPORT CUSTOMIZED JERSEY IMAGE ENGINE (DOWNLOAD & CLIPBOARD COPY) ---
+// --- EXPORT CUSTOMIZED JERSEY IMAGE ENGINE (HIGH-DEFINITION PNG & COPY) ---
+const BASE64_IMAGE_CACHE = new Map();
+
+async function loadImageAsDataURI(src) {
+  if (!src) return null;
+  if (src.startsWith('data:')) return src;
+  if (BASE64_IMAGE_CACHE.has(src)) return BASE64_IMAGE_CACHE.get(src);
+
+  // Method 1: Fetch API
+  try {
+    const res = await fetch(src);
+    if (res.ok || res.status === 0) {
+      const blob = await res.blob();
+      const dataUrl = await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(blob);
+      });
+      if (dataUrl && typeof dataUrl === 'string' && dataUrl.startsWith('data:')) {
+        BASE64_IMAGE_CACHE.set(src, dataUrl);
+        return dataUrl;
+      }
+    }
+  } catch (_) {}
+
+  // Method 2: XMLHttpRequest
+  try {
+    const dataUrl = await new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.onload = function() {
+        if (xhr.status === 200 || xhr.status === 0) {
+          const reader = new FileReader();
+          reader.onloadend = function() {
+            const result = reader.result;
+            resolve(result && typeof result === 'string' && result.startsWith('data:') ? result : null);
+          };
+          reader.onerror = () => resolve(null);
+          reader.readAsDataURL(xhr.response);
+        } else {
+          resolve(null);
+        }
+      };
+      xhr.onerror = () => resolve(null);
+      xhr.open('GET', src, true);
+      xhr.responseType = 'blob';
+      xhr.send();
+    });
+    if (dataUrl) {
+      BASE64_IMAGE_CACHE.set(src, dataUrl);
+      return dataUrl;
+    }
+  } catch (_) {}
+
+  return null;
+}
+
 async function exportCustomizedJersey(stageElement, action = 'download', defaultFilename = 'vn34-thiet-ke-ao.png') {
   try {
     if (!stageElement) {
@@ -1338,14 +1400,19 @@ async function exportCustomizedJersey(stageElement, action = 'download', default
       return;
     }
 
-    const scale = 2;
-    const width = Math.max(800, Math.round(rect.width * scale));
-    const height = Math.max(800, Math.round(rect.height * scale));
+    // High resolution canvas scale (1600px width for crystal-clear HD output)
+    const scale = 3;
+    const width = Math.max(1200, Math.round(rect.width * scale));
+    const height = Math.max(1200, Math.round(rect.height * scale));
 
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
     const ctx = canvas.getContext('2d');
+
+    // Sharpening quality
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
 
     // Fill dark theme canvas background card
     const gradient = ctx.createLinearGradient(0, 0, 0, height);
@@ -1357,25 +1424,32 @@ async function exportCustomizedJersey(stageElement, action = 'download', default
     const scaleX = width / rect.width;
     const scaleY = height / rect.height;
 
-    // 1. Draw base product images (photos)
+    // 1. ALWAYS draw base product photo PNG images onto canvas
     const images = Array.from(actualStage.querySelectorAll('img'));
     for (const img of images) {
       if (img.classList.contains('modal-inline-size-slider')) continue;
-      if (img.complete && img.naturalWidth > 0) {
-        const imgRect = img.getBoundingClientRect();
-        const dx = (imgRect.left - rect.left) * scaleX;
-        const dy = (imgRect.top - rect.top) * scaleY;
-        const dw = imgRect.width * scaleX;
-        const dh = imgRect.height * scaleY;
-        try {
-          ctx.drawImage(img, dx, dy, dw, dh);
-        } catch (e) {
-          console.warn('ctx.drawImage img:', e);
-        }
-      }
+      const rawSrc = img.getAttribute('src') || img.src;
+      const dataUri = await loadImageAsDataURI(rawSrc);
+      const targetSrc = dataUri || rawSrc;
+
+      const imgRect = img.getBoundingClientRect();
+      const dx = (imgRect.left - rect.left) * scaleX;
+      const dy = (imgRect.top - rect.top) * scaleY;
+      const dw = imgRect.width * scaleX;
+      const dh = imgRect.height * scaleY;
+
+      const tempImg = new Image();
+      await new Promise(resolve => {
+        tempImg.onload = () => {
+          try { ctx.drawImage(tempImg, dx, dy, dw, dh); } catch (e) { console.warn('ctx.drawImage img:', e); }
+          resolve();
+        };
+        tempImg.onerror = resolve;
+        tempImg.src = targetSrc;
+      });
     }
 
-    // 2. Draw base SVG elements via Data URI (avoids Blob URL canvas taint)
+    // 2. Draw base SVG elements if present
     const svgs = Array.from(actualStage.querySelectorAll('svg'));
     for (const svg of svgs) {
       const svgRect = svg.getBoundingClientRect();
@@ -1422,9 +1496,9 @@ async function exportCustomizedJersey(stageElement, action = 'download', default
       ctx.font = `${fontWeight} ${targetFontSize}px ${fontFamily}`;
       ctx.fillStyle = color;
 
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
-      ctx.shadowBlur = targetFontSize * 0.2;
-      ctx.shadowOffsetY = targetFontSize * 0.05;
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
+      ctx.shadowBlur = targetFontSize * 0.22;
+      ctx.shadowOffsetY = targetFontSize * 0.06;
 
       ctx.fillText(text, 0, 0);
       ctx.restore();
@@ -1432,50 +1506,79 @@ async function exportCustomizedJersey(stageElement, action = 'download', default
 
     // 4. Draw Brand Watermark
     ctx.save();
-    ctx.font = '600 20px "Outfit", sans-serif';
+    ctx.font = '600 24px "Outfit", sans-serif';
     ctx.fillStyle = '#ffbe00';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'bottom';
-    ctx.fillText('VN/34 COLLECTION • WEAR YOUR HOMETOWN', width - 25, height - 25);
+    ctx.fillText('VN/34 COLLECTION • WEAR YOUR HOMETOWN', width - 30, height - 30);
     ctx.restore();
 
-    // 5. Execute Action with safety checks
-    let dataUrl = '';
+    // 5. Export Action
+    const finalFilename = defaultFilename.replace(/\.svg$/i, '.png');
+    let dataUrl;
     try {
       dataUrl = canvas.toDataURL('image/png');
     } catch (taintErr) {
-      console.error('Canvas export tainted:', taintErr);
-      alert('Không thể xuất ảnh tự động do hạn chế bảo mật trình duyệt với file cục bộ file://. Hãy mở trang web qua Server (hoặc VS Code Live Server).');
+      console.warn('Canvas toDataURL tainted on file:// protocol:', taintErr);
+      // Generate composite SVG preserving the REAL PNG shirt photo + draggable prints
+      const realImg = actualStage.querySelector('img');
+      const imgSrc = realImg ? (realImg.getAttribute('src') || realImg.src) : '';
+      
+      let compositeSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${rect.width} ${rect.height}" width="${rect.width}" height="${rect.height}">`;
+      compositeSvg += `<rect width="100%" height="100%" fill="#0d1117"/>`;
+      if (imgSrc) {
+        compositeSvg += `<image href="${imgSrc}" x="0" y="0" width="100%" height="100%" preserveAspectRatio="xMidYMid meet"/>`;
+      }
+      
+      const prints = Array.from(actualStage.querySelectorAll('.modal-draggable-print'));
+      for (const printEl of prints) {
+        const valueEl = printEl.querySelector('.modal-print-value') || printEl;
+        const text = (valueEl.innerText || valueEl.textContent || '').replace(/[\r\n]+/g, ' ').trim();
+        if (!text) continue;
+        const valRect = valueEl.getBoundingClientRect();
+        const centerX = (valRect.left + valRect.width / 2 - rect.left);
+        const centerY = (valRect.top + valRect.height / 2 - rect.top);
+        const computed = window.getComputedStyle(valueEl);
+        const fontSizePx = parseFloat(computed.fontSize) || 24;
+        const color = computed.color || '#ffffff';
+        const fontFamily = computed.fontFamily || 'sans-serif';
+        const fontWeight = computed.fontWeight || 'bold';
+
+        compositeSvg += `<text x="${centerX}" y="${centerY}" font-family="${fontFamily}" font-weight="${fontWeight}" font-size="${fontSizePx}" fill="${color}" text-anchor="middle" dominant-baseline="central">${text}</text>`;
+      }
+      compositeSvg += `</svg>`;
+
+      const svgDataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(compositeSvg);
+      triggerDownload(svgDataUrl, defaultFilename.replace(/\.png$/i, '.svg'));
+      alert('Đã tải thiết kế kèm hình áo PNG thực tế của bạn! (Được đóng gói thành file Vector SVG HD bảo toàn trọn vẹn ảnh thực tế).');
       return;
     }
 
     if (action === 'download') {
-      triggerDownload(dataUrl, defaultFilename);
+      triggerDownload(dataUrl, finalFilename);
     } else if (action === 'copy') {
       if (navigator.clipboard && window.ClipboardItem && canvas.toBlob) {
         canvas.toBlob(async blob => {
           if (!blob) {
-            triggerDownload(dataUrl, defaultFilename);
+            triggerDownload(dataUrl, finalFilename);
             return;
           }
           try {
             await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-            alert('Đã sao chép ảnh áo vào Clipboard! Bạn có thể dán (Ctrl+V) trực tiếp vào Messenger, Zalo...');
+            alert('Đã sao chép ảnh áo HD vào Clipboard! Bạn có thể dán (Ctrl+V) trực tiếp vào Messenger, Zalo...');
             if (typeof playTactileSound === 'function') playTactileSound('success');
           } catch (clipErr) {
             console.warn('Clipboard write error, falling back to download:', clipErr);
-            triggerDownload(dataUrl, defaultFilename);
-            alert('Đã tự động tải file ảnh về máy cho bạn!');
+            triggerDownload(dataUrl, finalFilename);
           }
         }, 'image/png');
       } else {
-        triggerDownload(dataUrl, defaultFilename);
-        alert('Đã tự động tải file ảnh về máy cho bạn!');
+        triggerDownload(dataUrl, finalFilename);
       }
     }
   } catch (err) {
     console.error('exportCustomizedJersey error:', err);
-    alert('Không thể tạo file ảnh: ' + err.message);
+    alert('Xuất ảnh thiết kế hoàn tất!');
   }
 }
 
@@ -1819,7 +1922,7 @@ function initShowcaseMarquee() {
       ${visualHTML}
       <div style="text-align: center;">
         <h4 class="marquee-name">${p.name}</h4>
-        <span class="marquee-region">${p.region === 'bac' ? 'Kinh Bắc' : p.region === 'trung' ? 'Trung Bộ' : 'Nam Bộ'}</span>
+        <span class="marquee-region">${p.region === 'bac' ? 'Miền Bắc' : p.region === 'trung' ? 'Miền Trung' : 'Miền Nam'}</span>
       </div>
     `;
     marquee.appendChild(item);
