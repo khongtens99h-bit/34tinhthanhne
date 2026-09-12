@@ -1534,7 +1534,7 @@ button {
   display: flex;
   gap: 2rem;
   padding-right: 2rem;
-  animation: marqueeScroll 80s linear infinite;
+  animation: marqueeScroll 45s linear infinite;
   will-change: transform;
 }
 
