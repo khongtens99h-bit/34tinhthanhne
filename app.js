@@ -1488,11 +1488,12 @@ async function exportSingleJerseyStage(stageElement, filename, action = 'downloa
     ctx.font = `${fontWeight} ${targetFontSize}px ${fontFamily}`;
     ctx.fillStyle = color;
 
-    // Strict NO shadow on printed text and number
+    // Strict NO shadow and NO filter on printed text and number
     ctx.shadowColor = 'transparent';
     ctx.shadowBlur = 0;
     ctx.shadowOffsetX = 0;
     ctx.shadowOffsetY = 0;
+    ctx.filter = 'none';
 
     ctx.fillText(text, 0, 0);
     ctx.restore();
@@ -1567,8 +1568,7 @@ async function exportCustomizedJersey(stageElement, action = 'download', default
       const modalContainer = modal.querySelector(".modal-content");
       const name = (document.getElementById("modal-custom-name")?.value || "VIETNAM").trim();
       const num = (document.getElementById("modal-custom-number")?.value || "34").trim();
-      const slugMatch = defaultFilename.match(/VN34-([a-z0-9-]+)-/i);
-      const slug = slugMatch ? slugMatch[1] : "ao-dau";
+      const slug = modalContainer?.dataset?.slug || "ao-dau";
 
       const frontView = modalContainer ? modalContainer.querySelectorAll(".modal-jersey-view")[0] : null;
       const backStage = modalContainer ? modalContainer.querySelector(".modal-back-print-stage") : null;
